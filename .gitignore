@@ -35,3 +35,5 @@ environment1.yaml
 !/data/get_image/configs/class_map.json
 !/data/get_image/configs/alpha_list.json
 !/data/get_image/downloader.py
+
+quick_infer_outputs/
