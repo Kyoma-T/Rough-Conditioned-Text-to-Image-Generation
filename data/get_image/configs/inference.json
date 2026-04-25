@@ -1,0 +1,15 @@
+{
+  "device": "cuda",
+  "width": 512,
+  "height": 512,
+  "canny_low_threshold": 100,
+  "canny_high_threshold": 200,
+  "ddim_steps": 30,
+  "cfg_scale": 7.5,
+  "eta": 0.0,
+  "batch_size": 1,
+  "seed": 12345,
+  "mode": "c_fix",
+  "load_smart_ckpt": false,
+  "negative_prompt": ""
+}

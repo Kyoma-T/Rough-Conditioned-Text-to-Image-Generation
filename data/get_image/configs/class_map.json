@@ -1,0 +1,23 @@
+{
+  "Tiger": [
+    "Horse",
+    "Deer",
+    "Camel"
+  ],
+  "Horse": [
+    "Zebra",
+    "Camel"
+  ],
+  "Deer": [
+    "Tiger",
+    "Horse"
+  ],
+  "Camel": [
+    "Horse",
+    "Deer"
+  ],
+  "Zebra": [
+    "Horse",
+    "Deer"
+  ]
+}

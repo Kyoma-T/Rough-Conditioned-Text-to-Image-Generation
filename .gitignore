@@ -1,0 +1,37 @@
+# weights / checkpoints
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+
+# logs / outputs
+lightning_logs/
+logs/
+quick_compare_outputs/
+train_run.log
+*.log
+*.pid
+
+# python cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# temp / backup
+*.bak.*
+*.downloading
+
+environment1.yaml
+
+# dataset: ignore all by default
+/data/**
+!/data/
+!/data/.gitkeep
+!/data/README.md
+!/data/get_image/
+!/data/get_image/configs/
+!/data/get_image/configs/paths.json
+!/data/get_image/configs/inference.json
+!/data/get_image/configs/class_map.json
+!/data/get_image/configs/alpha_list.json
+!/data/get_image/downloader.py

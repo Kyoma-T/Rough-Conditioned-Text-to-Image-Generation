@@ -1,0 +1,9 @@
+{
+  "openimages_root": "data/get_image/openimages",
+  "work_root": "data/get_image",
+  "prompt_json_root": "data/get_image",
+  "model_config": "models/cldm_v15.yaml",
+  "control_ckpt": "models/control_v11p_sd15_canny.pth",
+  "sd_ckpt": "models/v1-5-pruned.ckpt",
+  "smart_ckpt": "models/canny.ckpt"
+}
