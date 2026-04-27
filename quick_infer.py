@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -16,14 +16,15 @@ from ldm.models.diffusion.ddim import DDIMSampler
 DEFAULT_NEGATIVE_PROMPT = (
     'lowres, blurry, bad anatomy, bad hands, cropped, worst quality, low quality'
 )
+DEFAULT_COMPARE_SMART_CKPT = Path('lightning_logs/version_7/checkpoints/csp-epochepoch=199.ckpt')
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             'Single-image SmartControl inference entrypoint. '
-            'Keeps the current canny/cldm training stack, but exposes a cleaner '
-            'demo-style interface for better single-image generation.'
+            'Supports either single-model sampling or pretrain-vs-smart comparison '
+            'on the same canny condition.'
         )
     )
     parser.add_argument('--image', type=Path, required=True, help='Input image path.')
@@ -56,14 +57,25 @@ def parse_args() -> argparse.Namespace:
         '--smart-ckpt',
         type=Path,
         default=Path('models/canny.ckpt'),
-        help='SmartControl checkpoint path. Used when mode=c_ada.',
+        help='SmartControl checkpoint path. Used by single-model c_ada inference.',
+    )
+    parser.add_argument(
+        '--compare-pretrain',
+        action='store_true',
+        help='Compare pretrain(c_fix) against SmartControl(c_ada) and save one output for each.',
+    )
+    parser.add_argument(
+        '--compare-smart-ckpt',
+        type=Path,
+        default=DEFAULT_COMPARE_SMART_CKPT,
+        help='SmartControl checkpoint path used when --compare-pretrain is enabled.',
     )
     parser.add_argument(
         '--mode',
         type=str,
         default='c_ada',
         choices=['c_fix', 'c_ada'],
-        help='Inference mode. c_ada uses SmartControl local adaptive control.',
+        help='Inference mode for single-model path. c_ada uses SmartControl local adaptive control.',
     )
     parser.add_argument(
         '--crop',
@@ -86,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         default=200,
         help='Canny high threshold.',
     )
-    parser.add_argument('--steps', type=int, default=50, help='DDIM steps.')
+    parser.add_argument('--steps', type=int, default=60, help='DDIM steps.')
     parser.add_argument('--cfg', type=float, default=8.5, help='Classifier-free guidance scale.')
     parser.add_argument('--eta', type=float, default=0.0, help='DDIM eta.')
     parser.add_argument(
@@ -99,8 +111,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--num-samples',
         type=int,
-        default=4,
-        help='Number of samples to draw using sequential seeds.',
+        default=1,
+        help='Number of samples to draw using sequential seeds. Compare mode requires 1.',
     )
     parser.add_argument(
         '--negative-prompt',
@@ -178,19 +190,25 @@ def load_into_model(model: torch.nn.Module, ckpt_path: Path, strict: bool = Fals
     return len(ret.missing_keys), len(ret.unexpected_keys)
 
 
-def build_model(args: argparse.Namespace) -> torch.nn.Module:
-    if args.mode == 'c_ada' and not args.smart_ckpt.exists():
-        raise FileNotFoundError(f'Smart checkpoint not found: {args.smart_ckpt}')
+def build_model(
+    config: Path,
+    control_ckpt: Path,
+    sd_ckpt: Path,
+    smart_ckpt: Optional[Path],
+    device: str,
+) -> torch.nn.Module:
+    if smart_ckpt is not None and not smart_ckpt.exists():
+        raise FileNotFoundError(f'Smart checkpoint not found: {smart_ckpt}')
 
-    model = create_model(str(args.config)).cpu()
-    load_into_model(model, args.control_ckpt, strict=False)
-    load_into_model(model, args.sd_ckpt, strict=False)
+    model = create_model(str(config)).cpu()
+    load_into_model(model, control_ckpt, strict=False)
+    load_into_model(model, sd_ckpt, strict=False)
 
-    if args.mode == 'c_ada':
-        missing, unexpected = load_into_model(model, args.smart_ckpt, strict=False)
-        print(f'[smart-ckpt] missing_keys={missing}, unexpected_keys={unexpected}')
+    if smart_ckpt is not None:
+        missing, unexpected = load_into_model(model, smart_ckpt, strict=False)
+        print(f'[smart-ckpt] {smart_ckpt}: missing_keys={missing}, unexpected_keys={unexpected}')
 
-    model = model.to(args.device).eval()
+    model = model.to(device).eval()
     return model
 
 
@@ -331,9 +349,21 @@ def build_overview_panel(input_rgb: np.ndarray, canny_rgb: np.ndarray, outputs: 
     return np.concatenate(tiles, axis=1)
 
 
-def main() -> None:
-    args = parse_args()
+def build_compare_panel(input_rgb: np.ndarray, canny_rgb: np.ndarray, pred_pre: np.ndarray, pred_ours: np.ndarray, seed: int) -> np.ndarray:
+    tiles = [
+        annotate_tile(input_rgb, 'input'),
+        annotate_tile(canny_rgb, 'canny'),
+        annotate_tile(pred_pre, f'pre_train c_fix seed={seed}'),
+        annotate_tile(pred_ours, f'ours c_ada seed={seed}'),
+    ]
+    return np.concatenate(tiles, axis=1)
 
+
+def pixel_mae(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.mean(np.abs(a.astype(np.float32) - b.astype(np.float32))))
+
+
+def validate_args(args: argparse.Namespace) -> None:
     if args.low_threshold < 0 or args.high_threshold < 0:
         raise ValueError('Canny thresholds must be >= 0.')
     if args.low_threshold > args.high_threshold:
@@ -351,19 +381,120 @@ def main() -> None:
     if args.device == 'cuda' and not torch.cuda.is_available():
         raise RuntimeError('CUDA requested but not available.')
 
-    image = read_crop_and_resize_rgb(
-        args.image,
-        crop=args.crop,
-        width=args.width,
-        height=args.height,
-    )
-    canny = to_canny_rgb(
-        image,
-        low_threshold=args.low_threshold,
-        high_threshold=args.high_threshold,
-    )
+    for path in (args.image, args.config, args.control_ckpt, args.sd_ckpt):
+        if not path.exists():
+            raise FileNotFoundError(f'Required file not found: {path}')
 
-    model = build_model(args)
+    if args.compare_pretrain:
+        if args.num_samples != 1:
+            raise ValueError('Compare mode requires --num-samples 1.')
+        if not args.compare_smart_ckpt.exists():
+            raise FileNotFoundError(f'Compare smart checkpoint not found: {args.compare_smart_ckpt}')
+    elif args.mode == 'c_ada' and not args.smart_ckpt.exists():
+        raise FileNotFoundError(f'Smart checkpoint not found: {args.smart_ckpt}')
+
+
+def run_compare_mode(args: argparse.Namespace, image: np.ndarray, canny: np.ndarray, out_dir: Path) -> None:
+    model_pre = build_model(
+        config=args.config,
+        control_ckpt=args.control_ckpt,
+        sd_ckpt=args.sd_ckpt,
+        smart_ckpt=None,
+        device=args.device,
+    )
+    pre_outputs, pre_seeds = infer_many(
+        model=model_pre,
+        canny_rgb=canny,
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        steps=args.steps,
+        cfg_scale=args.cfg,
+        eta=args.eta,
+        base_seed=args.seed,
+        num_samples=1,
+        mode='c_fix',
+        device=args.device,
+        control_scale=args.control_scale,
+    )
+    del model_pre
+    if args.device == 'cuda':
+        torch.cuda.empty_cache()
+
+    model_ours = build_model(
+        config=args.config,
+        control_ckpt=args.control_ckpt,
+        sd_ckpt=args.sd_ckpt,
+        smart_ckpt=args.compare_smart_ckpt,
+        device=args.device,
+    )
+    ours_outputs, ours_seeds = infer_many(
+        model=model_ours,
+        canny_rgb=canny,
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        steps=args.steps,
+        cfg_scale=args.cfg,
+        eta=args.eta,
+        base_seed=args.seed,
+        num_samples=1,
+        mode='c_ada',
+        device=args.device,
+        control_scale=args.control_scale,
+    )
+    del model_ours
+    if args.device == 'cuda':
+        torch.cuda.empty_cache()
+
+    pred_pre = pre_outputs[0]
+    pred_ours = ours_outputs[0]
+    seed = pre_seeds[0]
+
+    save_rgb(out_dir / 'input_rgb.png', image)
+    save_rgb(out_dir / 'input_canny.png', canny)
+    save_rgb(out_dir / 'pred_pretrain_fix.png', pred_pre)
+    save_rgb(out_dir / 'pred_ours_ada.png', pred_ours)
+    save_rgb(out_dir / 'panel_compare_4col.png', build_compare_panel(image, canny, pred_pre, pred_ours, seed))
+
+    meta = {
+        'image': str(args.image),
+        'prompt': args.prompt,
+        'negative_prompt': args.negative_prompt,
+        'compare_pretrain': True,
+        'crop': args.crop,
+        'width': args.width,
+        'height': args.height,
+        'low_threshold': args.low_threshold,
+        'high_threshold': args.high_threshold,
+        'steps': args.steps,
+        'cfg': args.cfg,
+        'eta': args.eta,
+        'control_scale': args.control_scale,
+        'seed': seed,
+        'pretrain_mode': 'c_fix',
+        'ours_mode': 'c_ada',
+        'compare_smart_ckpt': str(args.compare_smart_ckpt),
+        'control_ckpt': str(args.control_ckpt),
+        'sd_ckpt': str(args.sd_ckpt),
+        'mae_pre_vs_ours': pixel_mae(pred_pre, pred_ours),
+        'pretrain_seed': seed,
+        'ours_seed': ours_seeds[0],
+    }
+    (out_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    print('Saved outputs to:', out_dir)
+    print(f'  pred_pretrain_fix.png seed={seed}')
+    print(f'  pred_ours_ada.png seed={ours_seeds[0]}')
+    print(f'  MAE(pretrain vs ours)={meta["mae_pre_vs_ours"]:.6f}')
+
+
+def run_single_mode(args: argparse.Namespace, image: np.ndarray, canny: np.ndarray, out_dir: Path) -> None:
+    model = build_model(
+        config=args.config,
+        control_ckpt=args.control_ckpt,
+        sd_ckpt=args.sd_ckpt,
+        smart_ckpt=(args.smart_ckpt if args.mode == 'c_ada' else None),
+        device=args.device,
+    )
     outputs, seeds = infer_many(
         model=model,
         canny_rgb=canny,
@@ -378,9 +509,10 @@ def main() -> None:
         device=args.device,
         control_scale=args.control_scale,
     )
+    del model
+    if args.device == 'cuda':
+        torch.cuda.empty_cache()
 
-    out_dir = args.output_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
     save_rgb(out_dir / 'input_rgb.png', image)
     save_rgb(out_dir / 'input_canny.png', canny)
     for idx, (img_rgb, seed) in enumerate(zip(outputs, seeds), start=1):
@@ -393,6 +525,7 @@ def main() -> None:
         'image': str(args.image),
         'prompt': args.prompt,
         'negative_prompt': args.negative_prompt,
+        'compare_pretrain': False,
         'mode': args.mode,
         'crop': args.crop,
         'width': args.width,
@@ -415,6 +548,31 @@ def main() -> None:
     print('Saved outputs to:', out_dir)
     for idx, seed in enumerate(seeds, start=1):
         print(f'  sample_{idx:02d}: seed={seed}')
+
+
+def main() -> None:
+    args = parse_args()
+    validate_args(args)
+
+    image = read_crop_and_resize_rgb(
+        args.image,
+        crop=args.crop,
+        width=args.width,
+        height=args.height,
+    )
+    canny = to_canny_rgb(
+        image,
+        low_threshold=args.low_threshold,
+        high_threshold=args.high_threshold,
+    )
+
+    out_dir = args.output_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.compare_pretrain:
+        run_compare_mode(args=args, image=image, canny=canny, out_dir=out_dir)
+    else:
+        run_single_mode(args=args, image=image, canny=canny, out_dir=out_dir)
 
 
 if __name__ == '__main__':

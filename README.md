@@ -1,22 +1,32 @@
 # 基于 ControlNet 的局部自适应控制训练与数据构建
 
-本项目基于 ControlNet 和 Stable Diffusion1.5 预训练模型，通过在 **预训练 ControlNet** 上增加一个 **Control Scale Predictor (CSP)**，在解码阶段预测像素级的局部控制强度 `alpha`，从而实现：旨在条件图像和文本提示的冲突区域，实现更符合文本语义的生成结果。
+本项目基于 Stable Diffusion 与 ControlNet 预训练模型，实现了一种面向粗糙视觉条件的可控图像生成方法 SmartControl。
 
----
+传统 ControlNet 在控制条件与文本描述不完全匹配时容易产生结构冲突和视觉伪影的问题，系统引入控制尺度预测器（Control Scale Predictor, CSP），自适应预测局部控制强度。通过在冲突区域放松条件约束、在非冲突区域保持结构控制.
+
+模型能够在保留有用布局信息的同时，更好地生成符合文本语义和用户意图的图像。
+
+***
+
+## 项目效果
+
+![与ControlNet的对比](docs/pic.png)
+
+***
 
 ## 项目亮点
 
-| 特性 | 描述 |
-|------|------|
-| **粗糙条件文生图** | 可根据文本提示和文本提示适当冲突的条件图像来生成图像 |
-| **数据构造** | 提供从原始图像、条件图生成、候选 alpha 图筛选的冲突条件图及提示词数据集构造管线 |
-| **低样本需求** | 只需1000张训练样本，即可实现冲突条件文生图效果，并比controlnet方法效果更好 |
-| **复现友好** | 提供环境文件、配置文件、数据流水线、训练入口、推理脚本和日志/恢复能力 |
+| 特性          | 描述                                                   |
+| ----------- | ---------------------------------------------------- |
+| **粗糙条件文生图** | 相比于ControlNet方法，能够自适应调整图像条件和文本语义的冲突区域，实现更符合文本语义的生成结果 |
+| **数据构造**    | 提供从原始图像、条件图生成、候选 alpha 图筛选的冲突条件图及提示词数据集构造管线          |
+| **低样本需求**   | 只需800张训练样本，即可实现冲突条件文生图效果                             |
+| **复现友好**    | 提供环境文件、配置文件、数据流水线、训练入口、推理脚本和日志/恢复能力                  |
 
-
----
+***
 
 ## 项目架构
+
 ```text
 .
 ├─ pipeline_dataset.py              # 数据构建主流程
@@ -34,7 +44,8 @@
 │     └─ configs/                  # 数据构建配置
 └─ environment.yaml                # 推荐环境文件
 ```
----
+
+***
 
 ## 快速开始
 
@@ -57,15 +68,16 @@ conda activate sc_canny
 
 > [Stable Diffusion](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/v1-5-pruned.ckpt)
 > [ControlNet](https://huggingface.co/lllyasviel/ControlNet-v1-1/blob/main/control_v11p_sd15_canny.pth)
-> [checkpoint]()
+> [checkpoint](https://pan.baidu.com/s/1JvIn_IzfASiBUpzRi4s5oQ?pwd=2fe8#list/path=%2Fcheckpoint)
 
 ### 数据构建
 
-我们准备了数据集，您可以在[这里]()目录下下载。
+我们准备了数据集可以在[这里](https://pan.baidu.com/s/1Hd69Kpi_K_dbn3vZpSYnjA?pwd=vnn3#list/path=%2Fsmartcontrol_dataset%2Fcanny_dataset)下载。
 
-如果您想自己构建更大的数据集，我们提供了一个数据构建流水线,也可以参考docs/data_building.md：
+如果您想自己构建更大的数据集，我们提供了一个数据构建流水线,也可以参考docs/data\_building.md：
 
 ### 参数说明
+
 默认配置文件位于：
 
 - `data/get_image/configs/paths.json`
@@ -75,39 +87,39 @@ conda activate sc_canny
 
 #### `paths.json`
 
-| 参数 | 说明 |
-|------|------|
-| `openimages_root` | 原始图片目录 | 
-| `work_root` | 整个数据流水线的工作目录，conditions/generated/manifests 都会写到这里 | 
-| `prompt_json_root` | 原图 prompt 标注目录，脚本会读取 `<class>.json` | 
-| `smart_ckpt` |训练得到的模型权重| 
+| 参数                 | 说明                                                 |
+| ------------------ | -------------------------------------------------- |
+| `openimages_root`  | 原始图片目录                                             |
+| `work_root`        | 整个数据流水线的工作目录，conditions/generated/manifests 都会写到这里 |
+| `prompt_json_root` | 原图 prompt 标注目录，脚本会读取 `<class>.json`                |
+| `smart_ckpt`       | 训练得到的模型权重                                          |
 
 #### `inference.json`
 
-| 参数 | 说明 | 
-|------|------|
-| `width` / `height` | 输入和生成分辨率 | 
-| `canny_low_threshold` | Canny 下阈值，影响边缘数量 | 
-| `canny_high_threshold` | Canny 上阈值 | 
-| `cfg_scale` | 文本引导强度 |
-| `batch_size` | `generate` 阶段每批生成数量 |
-| `seed` | 基础随机种子，实际每对样本会再做稳定扰动 |
-| `mode` | 推理模式，`c_fix` 表示固定控制；`c_ada` 表示启用自适应控制 |
+| 参数                     | 说明                                    |
+| ---------------------- | ------------------------------------- |
+| `width` / `height`     | 输入和生成分辨率                              |
+| `canny_low_threshold`  | Canny 下阈值，影响边缘数量                      |
+| `canny_high_threshold` | Canny 上阈值                             |
+| `cfg_scale`            | 文本引导强度                                |
+| `batch_size`           | `generate` 阶段每批生成数量                   |
+| `seed`                 | 基础随机种子，实际每对样本会再做稳定扰动                  |
+| `mode`                 | 推理模式，`c_fix` 表示固定控制；`c_ada` 表示启用自适应控制 |
 
 #### `class_map.json`
 
- 类别替换规则
+类别替换规则
 
-| 规则 | 说明 |
-|------|------|
-| `key` | 原始类别 `clsinit` | 
-| `value` | 候选替换类别列表 `clsalt` | 
+| 规则      | 说明                |
+| ------- | ----------------- |
+| `key`   | 原始类别 `clsinit`    |
+| `value` | 候选替换类别列表 `clsalt` |
 
 #### `alpha_list.json`
 
-| 参数 | 说明 | 
-|------|------|
-| `alphas` | 候选控制强度列表，`generate` 会对每个 alpha 生一张图 | 
+| 参数       | 说明                                  |
+| -------- | ----------------------------------- |
+| `alphas` | 候选控制强度列表，`generate` 会对每个 alpha 生一张图 |
 
 ### How to train
 
@@ -118,15 +130,15 @@ python tutorial_train.py
 ### How to test
 
 ```bash
-python quick_compare_infer.py \
-  --image path/to/input.png \
-  --prompt "your prompt" \
-  --smart-ckpt path/to/your_smartcontrol.ckpt \
-  --device cuda \
-  --output-dir quick_compare_outputs/demo
+python quick_infer.py \
+  --image data/quick_test/bicycle.png\
+  --prompt "two people riding motorcycles " \
+  --compare-pretrain \
+  --compare-smart-ckpt models/canny.ckpt\
+  --output-dir quick_infer_outputs/bicycle_motorcycle\
 ```
 
----
+***
 
 ## 参考文献
 
@@ -142,9 +154,11 @@ python quick_compare_infer.py \
 ```
 
 在论文基础上，我们进行了以下修改：
+
 - 优化了模型结构，减少了参数量，提高了推理效率。
 - 扩大了数据集规模，并提出完整的数据构建管线。
-### 修正开源代码与论文差异
+
+### 修改训练目标和具体实现
 
 在对比论文和开源代码后，我重点处理了以下实现点：
 
@@ -157,19 +171,28 @@ python quick_compare_infer.py \
 
 论文没有给出训练数据构造脚本，我们自己构建了一个数据构建流水线，并通过扩大数据集规模，提高了模型的泛化能力。
 
-1.下载原始图片
-2. 从原始图像生成 canny 条件图  
-3. 根据 `class_map` 和 `alpha_list` 生成候选图  
-4. 生成 preview panel，便于人工挑选合理 alpha  
-5. 记录 `selection.csv`，要求保留样本必须显式标记 `plausible=1`  
-6. 将筛选结果打包成训练所需的 control/image panel 与 manifest  
+1. 下载原始图片
+2. 从原始图像生成 canny 条件图
+3. 根据 `class_map` 和 `alpha_list` 生成候选图
+4. 生成 preview panel，便于人工挑选合理 alpha
+5. 记录 `selection.csv`
+6. 将筛选结果打包成训练所需的 control/image panel 与 manifest
 
 ### 补齐快速测试和对比性能脚本
 
 当前版本还额外补齐测试脚本，用于对比模型的推理结果。
 
-- `quick_compare_infer.py`：同一输入下对比 `pretrain(c_fix)` 与 `ours(c_ada)`
-- `make_canny.py`：输出更完整的 4/5 列推理可视化
-- `pipeline_dataset.py`：多阶段数据构建主入口
+- `quick_infer.py`：快速生图脚本，能观察模型生图效果
+```bash
+python quick_infer.py \
+  --image <你的图片> \
+  --prompt "<你的prompt>" \
+  --compare-pretrain \
+  --compare-smart-ckpt models/canny.ckpt \
+  --device cuda \
+  --output-dir quick_infer_outputs/quick_infer
+  ```
 
-## To do
+
+<br />
+
